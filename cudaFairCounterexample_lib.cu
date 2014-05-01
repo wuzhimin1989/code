@@ -23,7 +23,7 @@ __constant__ int MAX_BLOCK_SMX = 16;
 __constant__ int MAX_BLOCK_THRESHOLD = 16;
 __constant__ int BLOCK_T = 1024;
 __constant__ int INITIAL_T;
-__constant__ int EXPAND_LEVEL = 2; 
+__constant__ int EXPAND_LEVEL = 1; 
 __constant__ int BLOCK_SYN_THRESHOLD = 8;
 __constant__ int TASKTYPE;
 __constant__ bool DEBUG = true; //used for debug infor output
@@ -395,7 +395,7 @@ __global__ void GPath(int startid, int * scc, int * outgoing, int ogwidth, int *
 							if(S_pathrecord_tail[inblocktid] == 31)
 							{
 								//queue full,copy back to global memory, here, as the path length is much bigger than the width of graph, so the length of pathrecord queue is important.
-								while(S_pathrecord_tail[inblocktid] != 0)
+								while(S_pathrecord_tail[inblocktid] > 0)
 								{
 									precord = S_Precord_Queue[inblocktid][--S_pathrecord_tail[inblocktid]];
 								
@@ -469,7 +469,8 @@ __global__ void GPath(int startid, int * scc, int * outgoing, int ogwidth, int *
 										Init_S_Queue[i][Init_S_Queue_tail[i]++] = Init_S_Queue[j][Init_S_Queue_tail[j]];
 										Init_S_Queue[j][Init_S_Queue_tail[j]] = -1;
 										Init_S_Queue_tail[j] = (Init_S_Queue_tail[j]+WARP_T)%WARP_T;
-										S_Precord_Queue[i][S_pathrecord_tail[i]++] = S_Precord_Queue[j][--S_pathrecord_tail[j]];
+										if(S_pathrecord_tail[j] > 0)
+											S_Precord_Queue[i][S_pathrecord_tail[i]++] = S_Precord_Queue[j][--S_pathrecord_tail[j]];
 										break;
 									}
 								}
@@ -584,7 +585,7 @@ __global__ void GPath(int startid, int * scc, int * outgoing, int ogwidth, int *
 		
 				for(i = 0; i < 32; i++)
 				{
-					while(S_pathrecord_tail[i] != 0)
+					while(S_pathrecord_tail[i] > 0)
 					{
 						precord = S_Precord_Queue[i][--S_pathrecord_tail[i]];
 						if(pathrecording[precord.selfid] != -1)
@@ -704,9 +705,9 @@ __global__ void GPath(int startid, int * scc, int * outgoing, int ogwidth, int *
 							P_taskd_index[i] = i*averagetask;
 						}
 						if(lastblocktask != 0)
-							P_taskd_index[i] = i*averagetask + lastblocktask;
+							P_taskd_index[i] = (i-1)*averagetask + lastblocktask;
 						else
-							P_taskd_index[i] = i*averagetask;
+							P_taskd_index[i] = (i-1)*averagetask;
 					
 					}
 				}
@@ -778,7 +779,7 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 	int i,j;
 	////////////////////////////
 	int TotalBlockTask = 0;
-	int MAX_QUEUE_SIZE = WARP_T;  //warp_t 
+	int MAX_QUEUE_SIZE = WARP_T/2;  //warp_t 
 	int QUEUE_AVAI_LENGTH,SUCC_SIZE; 
 	int WARPID, Inwarptid, WARPNum, LWarpTask;  
 	bool IFLastHead,IFLastBlock;
@@ -884,6 +885,16 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 	for(i = 1; i < 32; i++)
 		C_Init_S_WarpQueue[i] = &C_Init_S_WarpQueue[i-1][WARPNum*MAX_QUEUE_SIZE];
 	
+	if(inblocktindex == 0)
+	{
+		for(i = 0; i<32; i++)
+		{
+			for(j=0; j<WARPNum * MAX_QUEUE_SIZE; j++)
+			{
+				C_Init_S_WarpQueue[i][j] = -1;
+			}
+		}
+	}
 	bool * ifallwithtask = (bool*)&C_Init_S_WarpQueue[31][WARPNum*MAX_QUEUE_SIZE];
 	if(inblocktindex == 0)
 	{
@@ -895,6 +906,12 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 	{
 		for(i = 0; i < WARPNum; i++)
 			ifinblockadjustment[i] = false;
+	}
+	bool * nomoreresource = &ifinblockadjustment[WARPNum];
+	if(inblocktindex == 0)
+	{
+		for(i = 0; i < WARPNum; i++)
+			nomoreresource[i] = false;
 	}
 	if(inblocktindex == 0)
 	{
@@ -974,9 +991,8 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 		//if(globalthreadindex == 0)
 		//	free(P_G_sequence_index);
 
-		bool nomoreresource = false;
 		int moreresourcecount;
-		while(!ifallwithtask[WARPID] && !ifSccReach &&!nomoreresource)  //Initial step, guarantee each queue has task.
+		while(!ifallwithtask[WARPID] && !ifSccReach &&!nomoreresource[WARPID])  //Initial step, guarantee each queue has task.
 		{	
 			Childpeeknode = -1;
 			if(C_Init_S_WarpQueueTail[Inwarptid][WARPID] != C_Init_S_WarpQueueHead[Inwarptid][WARPID])
@@ -1077,7 +1093,7 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 							//queue full,copy back to global memory, here, as the path length is much bigger than the width of graph, so the length of pathrecord queue is important.
 							while(C_Warp_Pathtail[Inwarptid][WARPID] != C_Warp_Pathhead[Inwarptid][WARPID])
 							{
-								cprecord = C_Warp_PathRecording[Inwarptid][C_Warp_Pathtail[Inwarptid][WARPID]--];
+								cprecord = C_Warp_PathRecording[Inwarptid][--C_Warp_Pathtail[Inwarptid][WARPID]];
 
 								if(pathrecording[cprecord.selfid] != -1)
 									continue;
@@ -1128,8 +1144,12 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 								{
 									if((C_Init_S_WarpQueueTail[j][WARPID] - C_Init_S_WarpQueueHead[j][WARPID]+MAX_QUEUE_SIZE)%MAX_QUEUE_SIZE > 1)
 									{
-										moreresourcecount++;					
+										moreresourcecount++;			
+										if(C_Init_S_WarpQueueTail[j][WARPID] % MAX_QUEUE_SIZE == 0)
+											C_Init_S_WarpQueueTail[j][WARPID] += MAX_QUEUE_SIZE;
+		
 										C_Init_S_WarpQueue[i][C_Init_S_WarpQueueTail[i][WARPID]++] = C_Init_S_WarpQueue[j][--C_Init_S_WarpQueueTail[j][WARPID]];
+										
 										if(C_Warp_Pathtail[j][WARPID] != C_Warp_Pathhead[j][WARPID])
 											C_Warp_PathRecording[i][C_Warp_Pathtail[i][WARPID]++] = C_Warp_PathRecording[j][--C_Warp_Pathtail[j][WARPID]];
 										break;
@@ -1137,7 +1157,7 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 								}
 								if(moreresourcecount == 0)
 								{
-									nomoreresource = true;
+									nomoreresource[WARPID] = true;
 									break;
 								}
 							}
@@ -1259,7 +1279,7 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 						//queue full,copy back to global memory, here, as the path length is much bigger than the width of graph, so the length of pathrecord queue is important.
 						while(C_Warp_Pathtail[Inwarptid][WARPID] != C_Warp_Pathhead[Inwarptid][WARPID])
 						{
-							cprecord = C_Warp_PathRecording[Inwarptid][C_Warp_Pathtail[Inwarptid][WARPID]--];
+							cprecord = C_Warp_PathRecording[Inwarptid][--C_Warp_Pathtail[Inwarptid][WARPID]];
 
 							if(pathrecording[cprecord.selfid] != -1)
 								continue;
@@ -1367,12 +1387,14 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 											tmpreadindex1 = --C_Init_S_WarpQueueTail[tmpwcount][j];
 											tmp = C_Init_S_WarpQueue[tmpwcount][tmpreadindex1];
 											C_Init_S_WarpQueue[tmpwcount][C_Init_S_WarpQueueTail[tmpwcount][i]++] = tmpnode;
-
-											tmpreadindex2 = --C_Warp_Pathtail[tmpwcount][j];
-											tmp2 = C_Warp_PathRecording[tmpwcount][tmpreadindex2];
-											(C_Warp_PathRecording[tmpwcount][C_Warp_Pathtail[tmpwcount][i]]).selfid = tmp2.selfid;
-											(C_Warp_PathRecording[tmpwcount][C_Warp_Pathtail[tmpwcount][i]]).presucc = tmp2.presucc;
-
+											
+											if(C_Warp_Pathtail[tmpwcount][j] != C_Warp_Pathhead[tmpwcount][j])
+											{
+												tmpreadindex2 = --C_Warp_Pathtail[tmpwcount][j];
+												tmp2 = C_Warp_PathRecording[tmpwcount][tmpreadindex2];
+												(C_Warp_PathRecording[tmpwcount][C_Warp_Pathtail[tmpwcount][i]]).selfid = tmp2.selfid;
+												(C_Warp_PathRecording[tmpwcount][C_Warp_Pathtail[tmpwcount][i]]).presucc = tmp2.presucc;
+											}
 											Inwarpqueuelength[tmpwcount][j]--;
 											Warptasknum[j]--;
 											Warptasknum[i]++;
@@ -1392,10 +1414,11 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 		else
 			__gpu_blocks_tree_syn(goalVal++, Arrayin, Arrayout);
 
-		int averagetask, lefttask, GBcount, tmpmark;
+		int averagetask, lefttask, tmpmark;
 		int tcreadindex;
 		int tpcreadindex;//copy back path and tasks
 
+		GBcount = G_Queue.blockcount;
 		if(Child_syn_need)
 		{
 			switch(globalthreadindex)
@@ -1408,7 +1431,6 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 							CBackBlockTasksize[i] = Child_Queue_index[i];
 						}
 				
-						GBcount = G_Queue.blockcount;
 						for(i = 0; i<GBcount; i++)
 						{
 							Child_writeback_index[i] = 0;
@@ -1433,21 +1455,36 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 			if(ifSccReach || G_ifsccReach)
 				break;
 			
-			int ifallfinishcopy = 0;
+			int ifallfinishcopy = 0, m;
+			bool iffirsttime[32];
 			switch(inblocktindex)
 			{
 				case 0:
 				{
 					for(i = 0; i < WARPNum; i++) //copy back path first.
 					{
+						for(m = 0; m < 32; m++)
+							iffirsttime[m] = true;
+
 						while(ifallfinishcopy != 32)
 						{
 							for(j = 0; j < 32; j++)
 							{
 								if(C_Warp_Pathtail[j][i] == C_Warp_Pathhead[j][i])
+								{
+									if(iffirsttime[j] == true)
+									{
+										ifallfinishcopy++;
+										iffirsttime[j] = false;
+									}
 									continue;
-
-								tpcreadindex = C_Warp_Pathtail[j][i];
+								}
+								iffirsttime[j] = false;
+								if((tpcreadindex = C_Warp_Pathtail[j][i]) = 0)
+								{
+									tpcreadindex = C_Warp_Pathtail[j][i]+MAX_QUEUE_SIZE;
+								}
+									
 								cprecord = C_Warp_PathRecording[j][tpcreadindex-1];
 								if(pathrecording[cprecord.selfid] == -1)
 								{
@@ -1460,10 +1497,14 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 								}
 								else
 								{
-									C_Warp_Pathtail[j][i]--; 
-									continue;
+								 	if(--C_Warp_Pathtail[j][i] < 0)
+									{
+										C_Warp_Pathtail[j][i] += MAX_QUEUE_SIZE;
+						
+									}
+									
 								}
-								C_Warp_Pathtail[j][i]--;
+						
 
 								if(C_Warp_Pathtail[j][i] == C_Warp_Pathhead[j][i])
 									ifallfinishcopy++;
@@ -1474,21 +1515,36 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 
 					tmpqcount = 0;
 
-					if(GBcount == 1)
-						tmp = 0;
-					else
-						tmp = blockIdx.x % GBcount;
+					switch(GBcount)
+					{
+						case 1: tmp = 0; break;
+					
+						default:tmp = blockIdx.x % GBcount ;break;
+					}
 
 					for(i = 0; i < WARPNum; i++)
 					{
 						ifallfinishcopy = 0;
+						for(m = 0; m < 32; m++)
+							iffirsttime[m] = true;
+
+
 						while(ifallfinishcopy != 32)
 						{
+
 							for(j = 0; j < 32; j++)
 							{
 								if(C_Init_S_WarpQueueHead[j][i] == C_Init_S_WarpQueueTail[j][i])
+								{
+									if(iffirsttime[j] == true)
+									{
+										ifallfinishcopy++;
+										iffirsttime[j] = false;
+									}
 									continue;
-	
+								}
+
+								iffirsttime[j] = false;
 								tcreadindex = C_Init_S_WarpQueueHead[j][i];
 								tmpnode = C_Init_S_WarpQueue[j][tcreadindex];
 								if(DuplicateEli[tmpnode] == false)
@@ -1501,7 +1557,7 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 								{
 									CBackBlockTasksize[blockIdx.x]--;
 								}
-								if((++C_Init_S_WarpQueueHead[j][i]) == C_Init_S_WarpQueueHead[j][i+1])
+								if((++C_Init_S_WarpQueueHead[j][i]) % MAX_QUEUE_SIZE == 0)
 								{
 									C_Init_S_WarpQueueHead[j][i] -= MAX_QUEUE_SIZE;
 								}
