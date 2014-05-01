@@ -23,7 +23,7 @@ __constant__ int MAX_BLOCK_SMX = 16;
 __constant__ int MAX_BLOCK_THRESHOLD = 16;
 __constant__ int BLOCK_T = 1024;
 __constant__ int INITIAL_T;
-__constant__ int EXPAND_LEVEL = 1; 
+__constant__ int EXPAND_LEVEL = 2;
 __constant__ int BLOCK_SYN_THRESHOLD = 8;
 __constant__ int TASKTYPE;
 __constant__ bool DEBUG = true; //used for debug infor output
@@ -707,7 +707,7 @@ __global__ void GPath(int startid, int * scc, int * outgoing, int ogwidth, int *
 						if(lastblocktask != 0)
 							P_taskd_index[i] = (i-1)*averagetask + lastblocktask;
 						else
-							P_taskd_index[i] = (i-1)*averagetask;
+							P_taskd_index[i] = (i)*averagetask;
 					
 					}
 				}
@@ -779,7 +779,7 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 	int i,j;
 	////////////////////////////
 	int TotalBlockTask = 0;
-	int MAX_QUEUE_SIZE = WARP_T/2;  //warp_t 
+	int MAX_QUEUE_SIZE = WARP_T;  //warp_t 
 	int QUEUE_AVAI_LENGTH,SUCC_SIZE; 
 	int WARPID, Inwarptid, WARPNum, LWarpTask;  
 	bool IFLastHead,IFLastBlock;
@@ -1480,7 +1480,7 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 									continue;
 								}
 								iffirsttime[j] = false;
-								if((tpcreadindex = C_Warp_Pathtail[j][i]) = 0)
+								if((tpcreadindex = C_Warp_Pathtail[j][i]) % MAX_QUEUE_SIZE == 0)
 								{
 									tpcreadindex = C_Warp_Pathtail[j][i]+MAX_QUEUE_SIZE;
 								}
@@ -1497,14 +1497,18 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 								}
 								else
 								{
-								 	if(--C_Warp_Pathtail[j][i] < 0)
+								 	if(C_Warp_Pathtail[j][i] % MAX_QUEUE_SIZE == 0)
 									{
 										C_Warp_Pathtail[j][i] += MAX_QUEUE_SIZE;
 						
 									}
-									
+									else
+										C_Warp_Pathtail[j][i]--;
+									if(C_Warp_Pathtail[j][i] == C_Warp_Pathhead[j][i])
+                                                                        	ifallfinishcopy++;
+									continue;
 								}
-						
+								C_Warp_Pathtail[j][i]--;
 
 								if(C_Warp_Pathtail[j][i] == C_Warp_Pathhead[j][i])
 									ifallfinishcopy++;
