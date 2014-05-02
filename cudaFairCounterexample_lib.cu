@@ -83,6 +83,8 @@ __device__ int GstartID;
 __device__ int Gogwidth;
 //how to use const_restrict memory?
 __device__ bool G_loopfind;
+
+__device__ bool iffinish;
 //syn between blocks
 __device__ void __gpu_blocks_simple_syn(int goalval)
 {
@@ -186,7 +188,6 @@ __global__ void GPath(int startid, int * scc, int * outgoing, int ogwidth, int *
 	__shared__ bool ifSccReach;
 	__shared__ unsigned int path2sccmutex;
 	__shared__ unsigned int ifsccreachmutex;
-	__shared__ bool iffinish;
 
 	__shared__ int Init_S_Queue_head[32];  
 	__shared__ int Init_S_Queue_tail[32];
@@ -821,7 +822,6 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 	__shared__ int BlockQueuesize;
 
 	__shared__ bool ifSccReach;
-	__shared__ bool iffinish;
 	__shared__ unsigned int C_path2sccmutex;
 	__shared__ unsigned int C_ifsccreachmutex;
 
@@ -1229,18 +1229,21 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 				__syncthreads();
 				while(!iffinish && islocalfindscc)  
 				{  
-					if(!atomicExch(&G_path2sccmutex, 1))   //use lock to modify the path2scc
+					switch(!atomicExch(&G_path2sccmutex, 1))   //use lock to modify the path2scc
 					{
-						p2scc[0] = Childpeeknode;
-						relationindex = Childpeeknode;
-						for(i=1; pathrecording[relationindex] != GstartID; i++)
+						case true:
 						{
-							p2scc[i] = pathrecording[relationindex];
-							relationindex = p2scc[i];
-						}
+							p2scc[0] = Childpeeknode;
+							relationindex = Childpeeknode;
+							for(i=1; pathrecording[relationindex] != GstartID; i++)
+							{
+								p2scc[i] = pathrecording[relationindex];
+								relationindex = p2scc[i];
+							}
 
-						iffinish = true;
+							iffinish = true;
 							//atomicExch(&C_path2sccmutex, 0);
+						}
 					}
 				}
 
@@ -1334,7 +1337,7 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 				
 		}
 
-		switch(inblocktindex)
+		switch(globalthreadindex)
 		{
 			case 0:	iffinish = false;
 		}
