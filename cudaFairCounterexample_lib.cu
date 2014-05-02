@@ -182,6 +182,8 @@ __global__ void GPath(int startid, int * scc, int * outgoing, int ogwidth, int *
 	int tmp;
 	int tmpstart,tmpend;
 
+	int Q_LENGTH;
+
 	__shared__ bool ifinblockadjustment;
 	__shared__ int queuesize;
 	__shared__ bool ifexpand;
@@ -197,7 +199,6 @@ __global__ void GPath(int startid, int * scc, int * outgoing, int ogwidth, int *
 	__shared__ int inblockexceednum[32];
 	__shared__ int inblockavailength[32];
 
-	
 	switch(inblocktid)
 	{
 		case 0:
@@ -284,7 +285,7 @@ __global__ void GPath(int startid, int * scc, int * outgoing, int ogwidth, int *
 	}
 
 	//__syncthreads();
-	
+	Q_LENGTH = WARP_T;
 	int sccmid;
 	int loopcount = 0;
 	if(!ifSccReach)
@@ -372,7 +373,7 @@ __global__ void GPath(int startid, int * scc, int * outgoing, int ogwidth, int *
 				{
 					readindex = Init_S_Queue_head[inblocktid];
 					writeindex = Init_S_Queue_tail[inblocktid];
-					QUEUE_AVAI_LENGTH = WARP_T-(writeindex-readindex+WARP_T)%WARP_T;
+					QUEUE_AVAI_LENGTH = Q_LENGTH-((writeindex-readindex+Q_LENGTH) % Q_LENGTH);
 
 					while((outgoing[peeknode*ogwidth+succ_num]) > 0)
 					{	
@@ -393,7 +394,7 @@ __global__ void GPath(int startid, int * scc, int * outgoing, int ogwidth, int *
 								}
 							}
 
-							if(S_pathrecord_tail[inblocktid] == 31)
+							if(S_pathrecord_tail[inblocktid] == 32)
 							{
 								//queue full,copy back to global memory, here, as the path length is much bigger than the width of graph, so the length of pathrecord queue is important.
 								while(S_pathrecord_tail[inblocktid] > 0)
@@ -412,16 +413,17 @@ __global__ void GPath(int startid, int * scc, int * outgoing, int ogwidth, int *
 										}
 									}
 								}
+								S_pathrecord_tail[inblocktid] = 0;
 							}
 
 							writeindex = Init_S_Queue_tail[inblocktid];
 
 							Init_S_Queue[inblocktid][writeindex] = tmpnode;
 							Init_S_Queue_tail[inblocktid]++;
-							if(Init_S_Queue_tail[inblocktid] == WARP_T)
+							if(Init_S_Queue_tail[inblocktid] == Q_LENGTH)
 							{
 								
-								Init_S_Queue_tail[inblocktid] -= WARP_T;
+								Init_S_Queue_tail[inblocktid] -= Q_LENGTH;
 							}
 										
 							succ_num++;
@@ -466,12 +468,20 @@ __global__ void GPath(int startid, int * scc, int * outgoing, int ogwidth, int *
 									if((Init_S_Queue_tail[j]-Init_S_Queue_head[j]+WARP_T)%WARP_T > 1)
 									{
 										avairesourcecount++;
-										Init_S_Queue_tail[j]--;
+										if((--Init_S_Queue_tail[j]) < 0 )
+											Init_S_Queue_tail[j] += Q_LENGTH;
+
 										Init_S_Queue[i][Init_S_Queue_tail[i]++] = Init_S_Queue[j][Init_S_Queue_tail[j]];
+										if(Init_S_Queue_tail[i] == Q_LENGTH)
+											Init_S_Queue_tail[i] -= Q_LENGTH;
 										Init_S_Queue[j][Init_S_Queue_tail[j]] = -1;
-										Init_S_Queue_tail[j] = (Init_S_Queue_tail[j]+WARP_T)%WARP_T;
-										if(S_pathrecord_tail[j] > 0)
+										//Init_S_Queue_tail[j] = (Init_S_Queue_tail[j]+WARP_T)%WARP_T;
+										if(S_pathrecord_tail[j] >0)
+										{
 											S_Precord_Queue[i][S_pathrecord_tail[i]++] = S_Precord_Queue[j][--S_pathrecord_tail[j]];
+											//if(S_pathrecord_tail[i] == Q_LENGTH)
+											//	S_pathrecord_tail[i]-=Q_LENGTH;
+										}
 										break;
 									}
 								}
@@ -517,14 +527,40 @@ __global__ void GPath(int startid, int * scc, int * outgoing, int ogwidth, int *
 										{
 											while(true)
 											{
-												if(inblockavailength[tmpqcount] > WARP_T/2) //balance inblock while exceed;
+												if(inblockavailength[tmpqcount] > Q_LENGTH/2) //balance inblock while exceed;
 												{
 													writeindex = Init_S_Queue_tail[tmpqcount];
 													Init_S_Queue[tmpqcount][writeindex] = tmpnode;
-													if(Init_S_Queue_tail[tmpqcount]++ == WARP_T)
+													if(Init_S_Queue_tail[tmpqcount]++ == Q_LENGTH)
 													{
 														Init_S_Queue_tail[tmpqcount] -= WARP_T;
 													}
+													
+													(S_Precord_Queue[tmpqcount][S_pathrecord_tail[tmpqcount]]).selfid = tmpnode;
+													(S_Precord_Queue[tmpqcount][S_pathrecord_tail[tmpqcount]++]).presucc = peeknode;
+
+													if(S_pathrecord_tail[tmpqcount] == 32)
+                                                        						{
+                                                                						//queue full,copy back to global memory, here, as the path length is much bigger than the width of graph, so the length of pathrecord queue is important.
+                                                                						while(S_pathrecord_tail[tmpqcount] > 0)
+                                                               							 {
+                                                                        						precord = S_Precord_Queue[tmpqcount][--S_pathrecord_tail[tmpqcount]];
+
+                                                                        						if(pathrecording[precord.selfid] != -1)
+                                                                            							    continue;
+                                                                        						else
+                                                                        						{
+                                                                               							 if(!atomicExch(&G_pathrecMutex[precord.selfid], 1))
+                                                                                						{
+                                                                                      							  pathrecording[precord.selfid]=precord.presucc;
+                                                                                       							  DuplicateEli[precord.presucc] = true;
+                                                                                        						//atomicExch(&G_pathrecMutex[precord.selfid], 0);
+                                                                                						}
+                                                                        						}
+                                                                						}
+                                                                						S_pathrecord_tail[tmpqcount] = 0;
+                                                        						}
+														
 													succ_num++;
 													inblockavailength[tmpqcount]--;
 													break;
@@ -532,7 +568,7 @@ __global__ void GPath(int startid, int * scc, int * outgoing, int ogwidth, int *
 												else
 												{
 													tmpqcount++;
-													if(tmpqcount == 31)
+													if(tmpqcount == 32)
 													{											
 														tmpqcount = 0;
 
