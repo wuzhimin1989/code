@@ -698,7 +698,7 @@ __global__ void GPath(int startid, int * scc, int * outgoing, int ogwidth, int *
 							inblockwarpnum = averagetask + EXPAND_LEVEL*WARP_T;   //it is possible that the warp num exceed the limit.
 						}
 	
-						free(P_taskd_index);
+						//free(P_taskd_index);
 						P_taskd_index = new int[childbsize + 1];
 						for(i=0; i<childbsize;i++)
 						{
@@ -845,7 +845,17 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 	int * C_Warp_Pathhead[32];
 	C_Warp_Pathhead[0] = & C_Warp_Pathtail[31][WARPNum];
 	for(i = 1; i < 32; i++)
-		C_Warp_Pathhead[i] = &C_Warp_Pathhead[i-1][WARPNum+1];
+		C_Warp_Pathhead[i] = &C_Warp_Pathhead[i-1][WARPNum];
+
+	int * C_Warp_Pathbackup[32];
+	C_Warp_Pathbackup[0] = &C_Warp_Pathhead[31][WARPNum];
+	for(i = 1; i < 32; i++)
+		C_Warp_Pathbackup[i] = &C_Warp_Pathbackup[i-1][WARPNum+1];
+
+	int * C_Warpqueuebackup[32];
+	C_Warpqueuebackup[0] = &C_Warp_Pathbackup[31][WARPNum+1];
+	for(i = 1; i < 32; i++)
+		C_Warpqueuebackup[i] = &C_Warpqueuebackup[i-1][WARPNum +1];
 
 	if(inblocktindex == 0)
 	{
@@ -856,12 +866,15 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 				C_Init_S_WarpQueueTail[i][j] = j*MAX_QUEUE_SIZE;
 				C_Warp_Pathtail[i][j] = j*MAX_QUEUE_SIZE;
 				C_Warp_Pathhead[i][j] = j*MAX_QUEUE_SIZE;
+				C_Warp_Pathbackup[i][j] = j*MAX_QUEUE_SIZE;
+				C_Warpqueuebackup[i][j] = j*MAX_QUEUE_SIZE;
 			}
-			C_Warp_Pathhead[i][WARPNum] = (j)*MAX_QUEUE_SIZE + 1;
+			C_Warp_Pathbackup[i][WARPNum] = j*MAX_QUEUE_SIZE;
+			C_Warpqueuebackup[i][WARPNum] = j*MAX_QUEUE_SIZE;
 		}
 	}
 	
-	int * Warptasknum = &C_Warp_Pathhead[31][WARPNum+1];
+	int * Warptasknum = &C_Warpqueuebackup[31][WARPNum+1];
 	if(inblocktindex == 0)
 	{
 		for(i = 1; i < WARPNum; i++)
@@ -959,7 +972,7 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 					for(i=0; i < duration/WARPNum; i++)
 					{
 						C_Init_S_WarpQueue[j][C_Init_S_WarpQueueTail[j][WARPID]] = *(P_G_sequence_index[P_taskd_index[blockIdx.x] + WARPID * (duration/WARPNum) + i]);
-						if((++C_Init_S_WarpQueueTail[j][WARPID]) %  MAX_QUEUE_SIZE == 0)
+						if((++C_Init_S_WarpQueueTail[j][WARPID]) == C_Warpqueuebackup[j][WARPID+1])
 							C_Init_S_WarpQueueTail[j][WARPID] -= MAX_QUEUE_SIZE;
 				
 						if(j == 31)
@@ -979,7 +992,7 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 				if(WARPID < LWarpTask)
 				{	
 					C_Init_S_WarpQueue[j][C_Init_S_WarpQueueTail[j][WARPID]] = *(P_G_sequence_index)[P_taskd_index[blockIdx.x] + WARPNum * (duration/WARPNum) + WARPID];
-					if((++C_Init_S_WarpQueueTail[j][WARPID])%MAX_QUEUE_SIZE == 0)
+					if((++C_Init_S_WarpQueueTail[j][WARPID]) == C_Warpqueuebackup[j][WARPID+1])
 						C_Init_S_WarpQueueTail[j][WARPID] -= MAX_QUEUE_SIZE;
 					if(j == 31)
 						ifallwithtask[WARPID] = true;
@@ -1017,7 +1030,6 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 				__gpu_blocks_tree_syn(goalVal++, Arrayin, Arrayout);
 
 			
-					/******************************************/	
 			if(ifSccReach)
 			{
 				
@@ -1067,10 +1079,10 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 			if(ifSccReach || G_ifsccReach)
 				break;
 
-			if(Childpeeknode != -1)
+			if(Childpeeknode > 0)
 			{
 					succ_num = 1;
-					while(outgoing[Childpeeknode*Gogwidth + succ_num] != -1)
+					while(outgoing[Childpeeknode*Gogwidth + succ_num] > 0)
 					{
 						cwriteindex = C_Init_S_WarpQueueTail[Inwarptid][WARPID];
 
@@ -1087,8 +1099,8 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 							}
 						}
 
-
-						if(C_Warp_Pathtail[Inwarptid][WARPID] == C_Warp_Pathhead[Inwarptid][WARPID+1])
+						
+						if(C_Warp_Pathtail[Inwarptid][WARPID] == C_Warp_Pathhead[Inwarptid][WARPID])
 						{
 							//queue full,copy back to global memory, here, as the path length is much bigger than the width of graph, so the length of pathrecord queue is important.
 							while(C_Warp_Pathtail[Inwarptid][WARPID] != C_Warp_Pathhead[Inwarptid][WARPID])
@@ -1119,14 +1131,17 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 									//atomicExch(&G_pathrecMutex[cprecord.selfid], 0);
 								}
 							}
+							C_Warp_Pathtail[Inwarptid][WARPID] == C_Warp_Pathbackup[Inwarptid][WARPID];
 
 						}
 						C_Init_S_WarpQueue[Inwarptid][cwriteindex] = tmpnode;
-						if((++C_Init_S_WarpQueueTail[Inwarptid][WARPID])% MAX_QUEUE_SIZE==0)
+						if((++C_Init_S_WarpQueueTail[Inwarptid][WARPID]) == C_Warpqueuebackup[Inwarptid][WARPID + 1])
 							C_Init_S_WarpQueueTail[Inwarptid][WARPID] -= MAX_QUEUE_SIZE;
 						succ_num++;
 					}
-					C_Init_S_WarpQueueHead[Inwarptid][WARPID]++;
+					
+					if((++C_Init_S_WarpQueueHead[Inwarptid][WARPID]) == C_Warpqueuebackup[Inwarptid][WARPID + 1])
+						C_Init_S_WarpQueueHead[Inwarptid][WARPID] -= MAX_QUEUE_SIZE;
 
 			}
 			//__syncthreads();
@@ -1135,20 +1150,18 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 			{
 				case 0:
 					{	
-						for(i = 0;i < WARP_T; i++)
+						for(i = 0;i < 32; i++)
 						{
 							moreresourcecount = 0;
-							if(C_Init_S_WarpQueueTail[i][WARPID] == 0)
+							if(C_Init_S_WarpQueueTail[i][WARPID] == C_Warp_Pathbackup[i][WARPID] && C_Init_S_WarpQueueTail[i][WARPID] == C_Init_S_WarpQueueHead[i][WARPID])
 							{
-								for(j=0; j < WARP_T; j++)
+								for(j=0; j < 32; j++)
 								{
 									if((C_Init_S_WarpQueueTail[j][WARPID] - C_Init_S_WarpQueueHead[j][WARPID]+MAX_QUEUE_SIZE)%MAX_QUEUE_SIZE > 1)
 									{
 										moreresourcecount++;			
-										if(C_Init_S_WarpQueueTail[j][WARPID] % MAX_QUEUE_SIZE == 0)
-											C_Init_S_WarpQueueTail[j][WARPID] += MAX_QUEUE_SIZE;
-		
-										C_Init_S_WarpQueue[i][C_Init_S_WarpQueueTail[i][WARPID]++] = C_Init_S_WarpQueue[j][--C_Init_S_WarpQueueTail[j][WARPID]];
+							
+										C_Init_S_WarpQueue[i][C_Init_S_WarpQueueTail[i][WARPID]++] = C_Init_S_WarpQueue[j][--(C_Init_S_WarpQueueTail[j][WARPID])];
 										
 										if(C_Warp_Pathtail[j][WARPID] != C_Warp_Pathhead[j][WARPID])
 											C_Warp_PathRecording[i][C_Warp_Pathtail[i][WARPID]++] = C_Warp_PathRecording[j][--C_Warp_Pathtail[j][WARPID]];
@@ -1196,7 +1209,7 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 			if(ifSccReach)
 			{
 					
-				for(i=0;i<C_Warp_Pathtail[Inwarptid][WARPID];i++)
+				for(i=C_Warp_Pathbackup[Inwarptid][WARPID];i<C_Warp_Pathtail[Inwarptid][WARPID];i++)
 				{
 					cprecord = C_Warp_PathRecording[Inwarptid][i];
 					if(pathrecording[cprecord.selfid]!=-1)
@@ -1229,8 +1242,6 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 						iffinish = true;
 							//atomicExch(&C_path2sccmutex, 0);
 					}
-					else
-						break;
 				}
 
 				
@@ -1248,16 +1259,12 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 		if(Childpeeknode!=-1)
 		{
 				cwriteindex = C_Init_S_WarpQueueTail[Inwarptid][WARPID];
-				QUEUE_AVAI_LENGTH = MAX_QUEUE_SIZE - (cwriteindex-creadindex+MAX_QUEUE_SIZE)%MAX_QUEUE_SIZE;
+				//QUEUE_AVAI_LENGTH = MAX_QUEUE_SIZE - (cwriteindex-creadindex+MAX_QUEUE_SIZE)%MAX_QUEUE_SIZE;
 				
 				//SCCSIZE = outgoing[Childpeeknode][0];
 
 				while(outgoing[Childpeeknode*Gogwidth + succ_num] != -1)
 				{
-					//int pathcount = 0;
-					//bool ifnewjudge = true;
-					/*if(SCCSIZE < QUEUE_AVAI_LENGTH)
-					{*/
 					tmpnode = outgoing[Childpeeknode*Gogwidth + succ_num];
 						
 					(C_Warp_PathRecording[Inwarptid][C_Warp_Pathtail[Inwarptid][WARPID]]).selfid = tmpnode;
@@ -1274,7 +1281,7 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 					}
 
 
-					if(C_Warp_Pathtail[Inwarptid][WARPID] == C_Warp_Pathhead[Inwarptid][WARPID+1])
+					if(C_Warp_Pathtail[Inwarptid][WARPID] == C_Warp_Pathbackup[Inwarptid][WARPID+1])
 					{
 						//queue full,copy back to global memory, here, as the path length is much bigger than the width of graph, so the length of pathrecord queue is important.
 						while(C_Warp_Pathtail[Inwarptid][WARPID] != C_Warp_Pathhead[Inwarptid][WARPID])
@@ -1305,13 +1312,13 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 								//atomicExch(&G_pathrecMutex[cprecord.selfid], 0);
 							}
 						}
-
+						C_Warp_Pathtail[Inwarptid][WARPID] = C_Warp_Pathhead[Inwarptid][WARPID];
 					}
 
 					cwriteindex = C_Init_S_WarpQueueTail[Inwarptid][WARPID];
 					C_Init_S_WarpQueue[Inwarptid][cwriteindex] = tmpnode;
 					
-					if((++C_Init_S_WarpQueueTail[Inwarptid][WARPID])%MAX_QUEUE_SIZE==0)
+					if((++C_Init_S_WarpQueueTail[Inwarptid][WARPID]) == C_Warpqueuebackup[Inwarptid][WARPID+1])
 					{
 						C_Init_S_WarpQueueTail[Inwarptid][WARPID] -= MAX_QUEUE_SIZE;
 					}
@@ -1319,7 +1326,7 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 					succ_num++;
 				}
 				
-				if((++C_Init_S_WarpQueueHead[Inwarptid][WARPID])% MAX_QUEUE_SIZE == 0)
+				if((++C_Init_S_WarpQueueHead[Inwarptid][WARPID]) == C_Warpqueuebackup[Inwarptid][WARPID+1])
 				{
 					C_Init_S_WarpQueueHead[Inwarptid][WARPID]-= MAX_QUEUE_SIZE;
 				}
@@ -1345,8 +1352,6 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 		}
 		__syncthreads();
 
-		//calculate queuesize;
-		//int cpbackindex[4][32];
 		int indexcount=0;
 		int tmp;
 		PathNode tmp2;
@@ -1363,49 +1368,9 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 					if(TotalBlockTask > blockDim.x)
 					{
 						Child_syn_need = true;
-						Child_Queue_index[blockIdx.x] = TotalBlockTask;
+						
 					}
-					else  //adjustment intra block, inter warps
-					{
-						for(i = 0; i < WARPNum; i++)
-						{
-							if(ifinblockadjustment[i] == false)   //inblock adjustment
-							{
-								int tmpreadindex1, tmpreadindex2;
-								for(j = 0; j<WARPNum; j++)
-								{
-									if(ifinblockadjustment[j] == true && Warptasknum[j] == 32)
-										continue;
-
-									succ_num = 1;
-									tmpwcount=0;  //mark the queue
-
-									while(Warptasknum[j] > 32 && Warptasknum[i] < 32)
-									{
-										while(Inwarpqueuelength[tmpwcount][j] > 1)
-										{
-											tmpreadindex1 = --C_Init_S_WarpQueueTail[tmpwcount][j];
-											tmp = C_Init_S_WarpQueue[tmpwcount][tmpreadindex1];
-											C_Init_S_WarpQueue[tmpwcount][C_Init_S_WarpQueueTail[tmpwcount][i]++] = tmpnode;
-											
-											if(C_Warp_Pathtail[tmpwcount][j] != C_Warp_Pathhead[tmpwcount][j])
-											{
-												tmpreadindex2 = --C_Warp_Pathtail[tmpwcount][j];
-												tmp2 = C_Warp_PathRecording[tmpwcount][tmpreadindex2];
-												(C_Warp_PathRecording[tmpwcount][C_Warp_Pathtail[tmpwcount][i]]).selfid = tmp2.selfid;
-												(C_Warp_PathRecording[tmpwcount][C_Warp_Pathtail[tmpwcount][i]]).presucc = tmp2.presucc;
-											}
-											Inwarpqueuelength[tmpwcount][j]--;
-											Warptasknum[j]--;
-											Warptasknum[i]++;
-										}
-										tmpwcount++;
-									}
-								}
-							}
-						}
-						continue;
-					}
+					Child_Queue_index[blockIdx.x] = TotalBlockTask;
 				}
 		}
 
@@ -1427,7 +1392,7 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 					{
 						for(i=0; i<gridDim.x;i++)
 						{
-							Child_Expandedtask += Child_Queue_index[i]; 
+							//Child_Expandedtask += Child_Queue_index[i]; 
 							CBackBlockTasksize[i] = Child_Queue_index[i];
 						}
 				
@@ -1455,123 +1420,82 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 			if(ifSccReach || G_ifsccReach)
 				break;
 			
-			int ifallfinishcopy = 0, m;
-			bool iffirsttime[32];
 			switch(inblocktindex)
 			{
 				case 0:
 				{
 					for(i = 0; i < WARPNum; i++) //copy back path first.
 					{
-						for(m = 0; m < 32; m++)
-							iffirsttime[m] = true;
-
-						while(ifallfinishcopy != 32)
-						{
 							for(j = 0; j < 32; j++)
 							{
-								if(C_Warp_Pathtail[j][i] == C_Warp_Pathhead[j][i])
+								
+								while(C_Warp_Pathtail[j][i]!=C_Warp_Pathhead[j][i])
 								{
-									if(iffirsttime[j] == true)
-									{
-										ifallfinishcopy++;
-										iffirsttime[j] = false;
-									}
-									continue;
-								}
-								iffirsttime[j] = false;
-								if((tpcreadindex = C_Warp_Pathtail[j][i]) % MAX_QUEUE_SIZE == 0)
-								{
-									tpcreadindex = C_Warp_Pathtail[j][i]+MAX_QUEUE_SIZE;
-								}
+									tpcreadindex = C_Warp_Pathhead[j][i];
 									
-								cprecord = C_Warp_PathRecording[j][tpcreadindex-1];
-								if(pathrecording[cprecord.selfid] == -1)
-								{
-									if(!atomicExch(&G_pathrecMutex[cprecord.selfid], 1))
+									cprecord = C_Warp_PathRecording[j][tpcreadindex];
+									if(pathrecording[cprecord.selfid] == -1)
 									{
-										pathrecording[cprecord.selfid]=cprecord.presucc;
-										DuplicateEli[cprecord.presucc] = true;
+										if(!atomicExch(&G_pathrecMutex[cprecord.selfid], 1))
+										{
+											pathrecording[cprecord.selfid]=cprecord.presucc;
+											DuplicateEli[cprecord.presucc] = true;
 										//atomicExch(&G_pathrecMutex[cprecord.selfid], 0);
+										}
 									}
+								 	if(++C_Warp_Pathhead[j][i] == C_Warp_Pathbackup[j][i+1])
+										C_Warp_Pathhead[j][i] -= MAX_QUEUE_SIZE;
+			
 								}
-								else
-								{
-								 	if(C_Warp_Pathtail[j][i] % MAX_QUEUE_SIZE == 0)
-									{
-										C_Warp_Pathtail[j][i] += MAX_QUEUE_SIZE;
+
+							}
+						}
 						
+					
+
+						tmpqcount = 0;
+
+						switch(GBcount)
+						{
+							case 1: tmp = 0; break;
+					
+							default:tmp = blockIdx.x % GBcount ;break;
+						}
+
+						for(i = 0; i < WARPNum; i++)
+						{
+
+							for(j = 0; j < 32; j++)
+							{
+								while(C_Init_S_WarpQueueHead[j][i] != C_Init_S_WarpQueueTail[j][i])
+								{
+								
+									if(tcreadindex = C_Init_S_WarpQueueHead[j][i])
+									tmpnode = C_Init_S_WarpQueue[j][tcreadindex];
+									if(DuplicateEli[tmpnode] == false)
+									{
+										G_Queue.G_queue[tmp][Child_writeback_index[blockIdx.x] + tmpqcount] = tmpnode;
+									//G_Queue.G_queue_size[blockIdx.x]++;
+										tmpqcount++;
 									}
 									else
-										C_Warp_Pathtail[j][i]--;
-									if(C_Warp_Pathtail[j][i] == C_Warp_Pathhead[j][i])
-                                                                        	ifallfinishcopy++;
-									continue;
-								}
-								C_Warp_Pathtail[j][i]--;
-
-								if(C_Warp_Pathtail[j][i] == C_Warp_Pathhead[j][i])
-									ifallfinishcopy++;
-							}
-						}
-						ifallfinishcopy = 0;
-					}
-
-					tmpqcount = 0;
-
-					switch(GBcount)
-					{
-						case 1: tmp = 0; break;
-					
-						default:tmp = blockIdx.x % GBcount ;break;
-					}
-
-					for(i = 0; i < WARPNum; i++)
-					{
-						ifallfinishcopy = 0;
-						for(m = 0; m < 32; m++)
-							iffirsttime[m] = true;
-
-
-						while(ifallfinishcopy != 32)
-						{
-
-							for(j = 0; j < 32; j++)
-							{
-								if(C_Init_S_WarpQueueHead[j][i] == C_Init_S_WarpQueueTail[j][i])
-								{
-									if(iffirsttime[j] == true)
 									{
-										ifallfinishcopy++;
-										iffirsttime[j] = false;
+										CBackBlockTasksize[blockIdx.x]--;
 									}
-									continue;
+									if((++C_Init_S_WarpQueueHead[j][i]) != C_Init_S_WarpQueueTail[j][i] && C_Init_S_WarpQueueHead[j][i]== C_Warpqueuebackup[j][i+1])
+									{
+										C_Init_S_WarpQueueHead[j][i] -= MAX_QUEUE_SIZE;
+									}
 								}
-
-								iffirsttime[j] = false;
-								tcreadindex = C_Init_S_WarpQueueHead[j][i];
-								tmpnode = C_Init_S_WarpQueue[j][tcreadindex];
-								if(DuplicateEli[tmpnode] == false)
-								{
-									G_Queue.G_queue[tmp][Child_writeback_index[blockIdx.x] + tmpqcount] = tmpnode;
-									G_Queue.G_queue_size[blockIdx.x]++;
-									tmpqcount++;
-								}
-								else
-								{
-									CBackBlockTasksize[blockIdx.x]--;
-								}
-								if((++C_Init_S_WarpQueueHead[j][i]) % MAX_QUEUE_SIZE == 0)
-								{
-									C_Init_S_WarpQueueHead[j][i] -= MAX_QUEUE_SIZE;
-								}
-								if(C_Init_S_WarpQueueHead[j][i] == C_Init_S_WarpQueueTail[j][i])
-									ifallfinishcopy++;
-
 							}
+							//tmpqcount = tmpqcount;
+							//CBackBlockTasksize[blockIdx.x] = tmpqcount;
+							
 						}
+						CBackBlockTasksize[blockIdx.x] = tmpqcount;
+						tmpqcount = 0;
 					}
-				}
+				
 				default:break;
 			}
 
@@ -1580,6 +1504,9 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 				__gpu_blocks_simple_syn(gridDim.x);
 			else
 				__gpu_blocks_tree_syn(goalVal++, Arrayin, Arrayout);			
+			
+			if(inblocktindex == 0)
+				G_Queue.G_queue_size[blockIdx.x] = CBackBlockTasksize[blockIdx.x];
 			
 			switch(globalthreadindex)
 			{
@@ -1603,7 +1530,7 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 								P_G_sequence_index[tmpmark + j] = &(G_Queue.G_queue[tmp][Child_writeback_index[i]+j]);
 							tmpmark += CBackBlockTasksize[i];
 						}
-
+						Child_Expandedtask = wholetasknum;
 						if(wholetasknum > (gridDim.x * blockDim.x))
 							Child_need_back2parent = true;
 						else
@@ -1611,22 +1538,28 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 							averagetask = Child_Expandedtask/(gridDim.x);
 							lefttask = Child_Expandedtask - averagetask*(gridDim.x);
 							P_taskd_index[0] = 0;
-							for(i=1;i<gridDim.x;i++)
+							for(i=1;i<gridDim.x+1;i++)
 							{
 								if(lefttask > 0)
 								{
-									if(i < lefttask)
+									if(i <= lefttask)
 										P_taskd_index[i] = P_taskd_index[i-1] + averagetask +1;
 									else
 										P_taskd_index[i] = P_taskd_index[i-1] + averagetask;
 								}
 								else
-									P_taskd_index[i] = P_taskd_index[i-1] + averagetask;
+									P_taskd_index[i] = i* averagetask;
 							}
 						}
 					}
 			}
-
+			if(!Child_need_back2parent)
+			{
+					C_Init_S_WarpQueueHead[Inwarptid][WARPID] = C_Warpqueuebackup[Inwarptid][WARPID];
+					C_Init_S_WarpQueueTail[Inwarptid][WARPID] = C_Warpqueuebackup[Inwarptid][WARPID];
+					C_Warp_Pathtail[Inwarptid][WARPID] = C_Warp_Pathbackup[Inwarptid][WARPID];
+					C_Warp_Pathhead[Inwarptid][WARPID] = C_Warp_Pathbackup[Inwarptid][WARPID];
+			}
 			if(gridDim.x < BLOCK_SYN_THRESHOLD)
 				__gpu_blocks_simple_syn(gridDim.x);
 			else
@@ -1636,52 +1569,6 @@ __global__ void ChildPath(int GstartID, int ** P_G_sequence_index, int * P_taskd
 
 	}
 }
-
-//__device__ void partition(int* array, int left, int right, int * nleft, int *nright)
-//{
-//	int index = left;
-//	int pivot = array[index];
-//	int tmp;	
-//	tmp = array[index];
-//	array[index]=array[right];
-//	array[right]=tmp;
-//	for (int i=left; i<right; i++)
-//	{
-//		if (array[i] > pivot)
-//		{    
-//			tmp = array[index];
-//			array[index++]=array[i];
-//			array[i]=tmp;
-//		}
-//	}
-//	tmp = array[right];
-//	array[right]=array[index];
-//	array[index]=tmp;
-//	*nleft = index-1;
-//	*nright = index+1;
-//}
-
-//Cuda Quicksort
-//__global__ void Gquicksort(int * data, int left, int right)
-//{
-//	int nleft, nright;
-//	cudaStream_t s1, s2;
-//
-//	partition(data, left, right, &nleft, &nright);
-//
-//	if(left < nright)
-//	{
-//		cudaStreamCreateWithFlags(&s1, cudaStreamNonBlocking);
-//		Gquicksort<<<1,1,0,s1>>>(data, left, nright);
-//	}
-//	if(nleft < right)
-//	{
-//		cudaStreamCreateWithFlags(&s2, cudaStreamNonBlocking);
-//		Gquicksort<<<1,1,0,s2>>>(data, nleft, right);
-//	}
-//
-//}
-////////////////////////
 
 
 //outtoing array: should add a -1 in the end of each array.
